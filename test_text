@@ -1,1 +1,173 @@
 I am just a text file. Do you like me ? 
+
+
+Here now I transport some of the information I need from the R code 
+
+y ~ g.pop.NUTS2 + lag1_under15 + lag1_25_44 + lag1_45_64 + lag1_65 + 
+    lag2_15_24 + lag2_25_44 + lag1_g_15_24 + lag1_g_25_44 + lag1_g_45_64 + 
+    lag1_g_65 + log.quot + lag1_quot_15_24 + lag1_quot_25_44 + 
+    lag1_quot_45_64 + lag1_quot_65 + lag2_quot_15_24 + ctry_prop_under15 + 
+    ctry_prop_15_24 + ctry_prop_45_64 + ctry_prop_65 + lag2_ctry_prop_15_24 + 
+    lag1_ctry_pop_g_under15 + lag1_ctry_pop_g_45_64 + lag1_ctry_pop_g_65 + 
+    cluster_1 + cluster_2 + cluster_3 + urb_frac
+
+
+
+
+
+results <- parLapply(cl, seq(1, 20), function(z) {
+  Sieve_fit_brulee_mlp_20(train = standardized_data[,c('y',predictor.variable.names.new$selected.variables)] ,
+                            test = standardized_data_test[,c('y',predictor.variable.names.new$selected.variables)],
+                            formula_mod = new_frml ,
+                            num_neurons = 7, learning_rate = 0.3 , activation_fun = 'elu', 
+                            epochs_init = 5, rounds = 3 , seed_basis = z)
+
+})
+
+
+
+
+plot_inequality <- function(x){
+  M <- 6:150
+  n <- 2:250
+  combinations <- expand.grid(M, n)
+  colnames(combinations) = c('M','n')
+  valid_combinations <- subset(combinations,(1/10*(((x-10)/n)-20)>M))
+  ggplot(data = valid_combinations, aes(x = M, y = n)) +
+    geom_point(color = "blue") +
+    scale_x_continuous(name = "M (covariates)", breaks = seq(min(valid_combinations$M), max(valid_combinations$M))) +
+    scale_y_continuous(name = "n (neurons)", breaks = seq(min(valid_combinations$n), max(valid_combinations$n))) +
+    geom_vline(xintercept = unique(valid_combinations$M), color = "gray", linetype = "dashed") +
+    labs(title = "Combinations respecting the rule of thumb")+
+    theme_bw()+
+    theme(axis.text.x = element_text(size = 4))
+}
+
+
+
+fit_brulee_mlp <- function(training_data, formula, num_neurons, learning_rate, epochs_num, activation_fun, seed_to_set) {
+  # here we defint eh recipe and we assume the data to be already trasformed as necessary ! 
+  rece <-
+    recipe(formula,
+           data = training_data)
+  
+  set.seed(seed_to_set)
+  fit <- brulee_mlp(rece,
+                    activation = activation_fun,
+                    data = training_data,
+                    hidden_units = num_neurons,
+                    epochs = epochs_num,
+                    verbose = FALSE,
+                    learn_rate = learning_rate,
+                    stop_iter = 5,
+                    validation = 0
+  )
+  
+  return(fit)
+}
+
+
+
+extract_lowest <- function(my_list, n) {
+  if (length(my_list) == 0) {
+    stop("The input list is empty.")
+  }
+  # Extract the second elements from each pair in the list
+  second_elements <- sapply(my_list, function(x) x[[2]])
+  
+  # Find the indices of the 125 lowest elements
+  lowest_indices <- order(second_elements)[1:n] 
+  
+  # Extract the 125 elements from the original list
+  selected_elements <- my_list[lowest_indices]
+  
+  return(selected_elements)
+}
+
+
+
+Sieve_fit_brulee_mlp_20 <- function(train ,test , formula_mod ,
+                                 num_neurons, learning_rate , activation_fun , 
+                                 epochs_init, rounds , seed_basis ){
+
+  MAEs <- list()
+  candidate <- list()  
+  
+  # the first round is not "competitive". The others are.
+  MAEs[[1]] <-
+    lapply(seq(1, epochs_init^(epochs_init-1)),
+           function(x) {
+             fit_b <- fit_brulee_mlp(training_data = train,
+                                     formula_mod,
+                                     num_neurons,
+                                     learning_rate,
+                                     epochs_init,
+                                     activation_fun,
+                      
+                                     seed_to_set = seed_basis * x)
+             
+             MAE = Metrics::mae(pull(predict(fit_b, test)),test$y)+Metrics::mae(pull(predict(fit_b, train)),train$y)
+             
+             res_list <- list(seed_basis * x,MAE)
+             return(res_list)
+           }
+           
+    )
+  
+  candidate[[1]] <-  extract_lowest(MAEs[[1]], epochs_init^(epochs_init-2))
+  
+
+  for (i in 2:rounds) { 
+  if(i == rounds){
+  MAEs[[i]] <-
+    lapply(sapply(candidate[[i-1]] , function(x) x[[1]]),
+           function(x) {
+             fit_b <- fit_brulee_mlp(training_data = train,
+                                     formula_mod,
+                                     num_neurons,
+                                     learning_rate,
+                                     epochs_init^(rounds-(rounds-(i+1))),
+                                     
+                                     activation_fun,
+                                     
+                                     seed_to_set = x) # here the meaning of x, changes.
+             
+             
+             MAE = Metrics::mae(pull(predict(fit_b, test)),test$y)+Metrics::mae(pull(predict(fit_b, train)),train$y)
+             
+             res_list <- list(x,MAE, fit_b)
+             return(res_list)
+           }
+           
+    )
+  
+  
+} else {MAEs[[i]] <-
+      lapply(sapply(candidate[[i-1]] , function(x) x[[1]]),
+             function(x) {
+               fit_b <- fit_brulee_mlp(training_data = train,
+                                       formula_mod,
+                                       num_neurons,
+                                       learning_rate,
+                                       epochs_init^(rounds-(rounds-(i+1))),
+
+                                       activation_fun,
+
+                                       seed_to_set = x)
+               
+
+               MAE = Metrics::mae(pull(predict(fit_b, test)),test$y)+Metrics::mae(pull(predict(fit_b, train)),train$y)
+
+               res_list <- list(x,MAE)
+               return(res_list)
+             }
+
+      )
+}
+
+    candidate[[i]] <-  extract_lowest(MAEs[[i]], epochs_init^(epochs_init-(i+1))  )
+  }
+
+  return(candidate[[rounds]])
+  }
+
